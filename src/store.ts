@@ -52,6 +52,7 @@ export class Store {
     this.db.prepare('DELETE FROM sessions WHERE expires <= ?').run(now);
     this.db.prepare('DELETE FROM limits WHERE expires <= ?').run(now);
     this.db.prepare('UPDATE requests SET result=NULL, result_expires=NULL WHERE result_expires <= ?').run(now);
+    this.db.exec('DELETE FROM users WHERE consent IS NULL AND NOT EXISTS (SELECT 1 FROM sessions WHERE user_id=users.id) AND NOT EXISTS (SELECT 1 FROM requests WHERE user_id=users.id)');
   }
   rateLimit(scope: string, identity: string, maximum: number, windowMs: number) {
     const now = Date.now();

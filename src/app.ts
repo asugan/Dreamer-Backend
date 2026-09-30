@@ -18,6 +18,7 @@ export function createApp(config: Config, store: Store, services: Services) {
   app.post('/v1/sessions', (req, res) => {
     z.object({}).strict().parse(req.body);
     store.rateLimit('registration', req.ip ?? 'unknown', 10, 3600000);
+    store.rateLimit('registration-global', 'all', 1000, 86400000);
     res.status(201).json({ ...store.createSession(), consentVersion: CONSENT_VERSION });
   });
   app.use('/v1', (req, res, next) => {
@@ -77,6 +78,7 @@ export function createApp(config: Config, store: Store, services: Services) {
   app.post('/v1/weekly', (req, res) => generate('weekly', req, res));
   app.use((_req, res) => { res.status(404).json({ error: 'not_found' }); });
   const errors: ErrorRequestHandler = (error: unknown, _req, res, _next) => {
+    void _next; // Express identifies error middleware by its four arguments.
     if (error instanceof z.ZodError) { res.status(400).json({ error: 'invalid_request' }); return; }
     if (error instanceof HttpError) { res.status(error.status).json({ error: error.code }); return; }
     const type = (error as { type?: string })?.type;

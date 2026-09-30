@@ -35,6 +35,7 @@ test('HTTP flow: authentication, consent, RevenueCat, proxy contract, replay and
   const store = new Store(':memory:', config.DATA_KEY);
   let generations = 0;
   let rcCalls = 0;
+  let mode = 'valid';
   const upstream: typeof fetch = async (url, options) => {
     if (String(url).startsWith('https://api.revenuecat.com/')) {
       rcCalls++;
@@ -49,7 +50,12 @@ test('HTTP flow: authentication, consent, RevenueCat, proxy contract, replay and
     assert.equal(payload.stream, false);
     assert.equal(payload.max_tokens, 2000);
     assert.equal(payload.messages[0].role, 'system');
-    return json({ choices: [{ message: { content: JSON.stringify(result) }, finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 50 } });
+    if (mode === 'network') throw new Error('Network interrupted');
+    const data = JSON.parse(payload.messages[1].content);
+    const reply = mode === 'invalid' ? { ...result, connectionId: 'invented' } : data.entries
+      ? { title: 'A quiet week', summary: 'Calm appeared in these entries.', question: 'What felt peaceful?', sourceIds: data.entries.map((e: { id: string }) => e.id) }
+      : result;
+    return json({ choices: [{ message: { content: JSON.stringify(reply) }, finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 50 } });
   };
   const server = createApp(config, store, createServices(config, store, upstream)).listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -84,6 +90,25 @@ test('HTTP flow: authentication, consent, RevenueCat, proxy contract, replay and
     assert.equal(row.input_tokens, 100);
     const membership = await call('/v1/membership', undefined, session.token, 'GET');
     assert.equal((await membership.json()).usage.interpretations.used, 1);
+    const week = { requestId: randomUUID(), entries: ['a', 'b', 'c'].map(id => ({ id, date: '2026-10-01', summary: 'A quiet dream', themes: ['Calm'] })) };
+    const weekly = await call('/v1/weekly', week, session.token);
+    assert.equal(weekly.status, 200);
+    assert.deepEqual((await weekly.json()).result.sourceIds, ['a', 'b', 'c']);
+    mode = 'invalid';
+    const invalid = await call('/v1/interpretations', input(), session.token);
+    assert.equal(invalid.status, 502);
+    assert.equal((await invalid.json()).error, 'generation_failed');
+    const afterFailure = await call('/v1/membership', undefined, session.token, 'GET');
+    assert.equal((await afterFailure.json()).usage.interpretations.used, 1);
+    mode = 'network';
+    const ambiguousBody = input();
+    const ambiguous = await call('/v1/interpretations', ambiguousBody, session.token);
+    assert.equal((await ambiguous.json()).error, 'generation_uncertain');
+    const afterNetwork = await call('/v1/membership', undefined, session.token, 'GET');
+    assert.equal((await afterNetwork.json()).usage.interpretations.used, 2);
+    const count = generations;
+    assert.equal((await call('/v1/interpretations', ambiguousBody, session.token)).status, 409);
+    assert.equal(generations, count);
     assert.equal((await call('/v1/interpretations', { ...input(), premium: true }, session.token)).status, 400);
     assert.equal((await call('/v1/consent', { granted: false, version: CONSENT_VERSION }, session.token, 'PUT')).status, 204);
     assert.equal((await call('/v1/interpretations', body, session.token)).status, 403);
