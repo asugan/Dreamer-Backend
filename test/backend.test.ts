@@ -1,0 +1,197 @@
+import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+import { createApp } from '../src/app.ts';
+import type { Config } from '../src/config.ts';
+import { HttpError } from '../src/errors.ts';
+import { CONSENT_VERSION, interpretationInput, weeklyInput, validateResult } from '../src/schema.ts';
+import { createServices } from '../src/services.ts';
+import { Store } from '../src/store.ts';
+const config: Config = {
+  HOST: '127.0.0.1', PORT: 3001, DATABASE_PATH: ':memory:', DATA_KEY: 'a'.repeat(64),
+  CLIPROXY_BASE_URL: 'http://proxy.test/v1', CLIPROXY_API_KEY: 'proxy-secret', CLIPROXY_MODEL: 'configured-model',
+  REVENUECAT_SECRET_KEY: 'rc-secret', REVENUECAT_ENTITLEMENT: 'premium', REVENUECAT_MONTHLY_PRODUCT_ID: 'monthly',
+  ALLOW_SANDBOX: 'false', DAILY_GENERATION_LIMIT: 200,
+};
+const input = () => ({ requestId: randomUUID(), dream: { id: 'dream-1', date: '2026-10-01', text: 'I walked beside a quiet lake.', context: '' }, history: [] });
+const result = { title: 'A quiet lake', summary: 'You walked beside a lake.', themes: [{ name: 'Calm', detail: 'The quiet water may suggest calm.', icon: 'water' }], meaning: 'It might reflect a wish for stillness.', question: 'How did the lake feel?', connectionId: null, safety: 'reflection' };
+const start = new Date(Date.now() - 86400000).toISOString();
+const end = new Date(Date.now() + 30 * 86400000).toISOString();
+function customer(overrides = {}) {
+  return { subscriber: { entitlements: { premium: { product_identifier: 'monthly', expires_date: end } }, subscriptions: { monthly: {
+    purchase_date: start, expires_date: end, grace_period_expires_date: null, refunded_at: null,
+    is_sandbox: false, store: 'app_store', store_transaction_id: 'transaction-1', ownership_type: 'PURCHASED', ...overrides,
+  } } } };
+}
+const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+const access = { billingKey: 'verified-transaction', period: start, expiresAt: end };
+const code = (value: string) => (error: unknown) => error instanceof HttpError && error.code === value;
+
+test('HTTP flow: authentication, consent, RevenueCat, proxy contract, replay and revocation', async () => {
+  const store = new Store(':memory:', config.DATA_KEY);
+  let generations = 0;
+  let rcCalls = 0;
+  const upstream: typeof fetch = async (url, options) => {
+    if (String(url).startsWith('https://api.revenuecat.com/')) {
+      rcCalls++;
+      assert.equal((options?.headers as Record<string,string>).Authorization, 'Bearer rc-secret');
+      return json(customer());
+    }
+    generations++;
+    assert.equal(String(url), 'http://proxy.test/v1/chat/completions');
+    assert.equal((options?.headers as Record<string,string>).Authorization, 'Bearer proxy-secret');
+    const payload = JSON.parse(options?.body as string);
+    assert.equal(payload.model, 'configured-model');
+    assert.equal(payload.stream, false);
+    assert.equal(payload.max_tokens, 2000);
+    assert.equal(payload.messages[0].role, 'system');
+    return json({ choices: [{ message: { content: JSON.stringify(result) }, finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 50 } });
+  };
+  const server = createApp(config, store, createServices(config, store, upstream)).listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const call = (path: string, body?: unknown, token?: string, method = 'POST') => fetch(base + path, {
+    method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  try {
+    assert.equal((await call('/v1/interpretations', input())).status, 401);
+    const created = await call('/v1/sessions', {});
+    assert.equal(created.status, 201);
+    const session = await created.json() as { userId: string; token: string };
+    assert.notEqual(session.userId, session.token);
+    assert.equal((await call('/v1/interpretations', input(), session.token)).status, 403);
+    assert.equal(generations, 0);
+    assert.equal((await call('/v1/consent', { granted: true, version: CONSENT_VERSION }, session.token, 'PUT')).status, 204);
+    const body = input();
+    const first = await call('/v1/interpretations', body, session.token);
+    assert.equal(first.status, 200);
+    const output = await first.json();
+    assert.equal(output.result.sourceText, body.dream.text);
+    assert.equal(output.cached, false);
+    const retry = await call('/v1/interpretations', body, session.token);
+    assert.equal((await retry.json()).cached, true);
+    assert.equal(generations, 1);
+    assert.equal(rcCalls, 1);
+    assert.equal((await call('/v1/interpretations', { ...body, dream: { ...body.dream, text: 'Changed' } }, session.token)).status, 409);
+    const row = store.db.prepare('SELECT result,fingerprint,input_tokens FROM requests').get() as { result: string; fingerprint: string; input_tokens: number };
+    assert.ok(!row.result.includes('quiet lake'));
+    assert.ok(!row.fingerprint.includes('quiet lake'));
+    assert.equal(row.input_tokens, 100);
+    const membership = await call('/v1/membership', undefined, session.token, 'GET');
+    assert.equal((await membership.json()).usage.interpretations.used, 1);
+    assert.equal((await call('/v1/interpretations', { ...input(), premium: true }, session.token)).status, 400);
+    assert.equal((await call('/v1/consent', { granted: false, version: CONSENT_VERSION }, session.token, 'PUT')).status, 204);
+    assert.equal((await call('/v1/interpretations', body, session.token)).status, 403);
+    assert.equal((store.db.prepare('SELECT result FROM requests').get() as { result: unknown }).result, null);
+    assert.equal((await call('/v1/session', undefined, session.token, 'DELETE')).status, 204);
+    assert.equal((await call('/v1/membership', undefined, session.token, 'GET')).status, 401);
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); store.close(); }
+});
+
+test('quota is shared across restored identities, retries cannot consume twice, failure releases reservation', () => {
+  const store = new Store(':memory:', config.DATA_KEY);
+  try {
+    const a = store.createSession(); const b = store.createSession();
+    const id = randomUUID();
+    store.reserve(a.userId, id, 'fingerprint', access, 'interpretation', 200);
+    assert.throws(() => store.reserve(b.userId, randomUUID(), 'other', access, 'interpretation', 200), code('generation_in_progress'));
+    assert.throws(() => store.replay(a.userId, id, 'fingerprint'), code('request_pending'));
+    store.fail(a.userId, id, false);
+    assert.equal(store.usage(access, 'interpretation'), 0);
+    assert.throws(() => store.reserve(a.userId, id, 'fingerprint', access, 'interpretation', 200), code('request_exists'));
+    for (let i = 0; i < 30; i++) {
+      const requestId = randomUUID();
+      store.reserve(a.userId, requestId, 'fingerprint', access, 'interpretation', 200);
+      store.complete(a.userId, requestId, result, { input: 1, output: 1 }, 'model');
+    }
+    assert.throws(() => store.reserve(b.userId, randomUUID(), 'f', access, 'interpretation', 200), code('quota_exceeded'));
+    store.reserve(b.userId, randomUUID(), 'f', { ...access, period: end }, 'interpretation', 200);
+  } finally { store.close(); }
+});
+
+test('uncertain generation stays charged; restart never regenerates it; encrypted response expires', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dreamer-test-')); const path = join(dir, 'test.sqlite');
+  let store = new Store(path, config.DATA_KEY);
+  try {
+    const session = store.createSession(); const id = randomUUID();
+    store.reserve(session.userId, id, 'f', access, 'interpretation', 200);
+    store.close(); store = new Store(path, config.DATA_KEY);
+    assert.throws(() => store.replay(session.userId, id, 'f'), code('request_uncertain'));
+    assert.equal(store.usage(access, 'interpretation'), 1);
+    store.setConsent(session.userId, CONSENT_VERSION);
+    const completed = randomUUID();
+    store.reserve(session.userId, completed, 'f', access, 'interpretation', 200);
+    store.complete(session.userId, completed, result, { input: null, output: null }, 'model');
+    assert.deepEqual(store.replay(session.userId, completed, 'f'), result);
+    store.db.prepare('UPDATE requests SET result_expires=? WHERE id=?').run(Date.now()-1, completed);
+    store.cleanup();
+    assert.throws(() => store.replay(session.userId, completed, 'f'), code('result_expired'));
+    assert.equal(store.usage(access, 'interpretation'), 2);
+  } finally { store.close(); rmSync(dir, { recursive: true }); }
+});
+
+test('RevenueCat rejects expiry, refund, sandbox, shared/promo access and missing transaction; allows verified grace', async () => {
+  const store = new Store(':memory:', config.DATA_KEY);
+  try {
+    for (const overrides of [
+      { expires_date: start }, { refunded_at: start }, { is_sandbox: true },
+      { ownership_type: 'FAMILY_SHARED' }, { store: 'promotional' }, { store_transaction_id: null },
+    ]) {
+      const service = createServices(config, store, async () => json(customer(overrides)));
+      await assert.rejects(service.access('server-issued-id'), code('subscription_required'));
+    }
+    const service = createServices(config, store, async () => json(customer({ expires_date: start, grace_period_expires_date: end })));
+    const a = await service.access('original-user'); const b = await service.access('restored-user');
+    assert.deepEqual(a, b);
+    const broken = createServices(config, store, async () => json({}, 500));
+    await assert.rejects(broken.access('id'), code('subscription_service_unavailable'));
+  } finally { store.close(); }
+});
+
+test('schema guards text limits, weekly thresholds, duplicate IDs and invented history references', () => {
+  assert.equal(interpretationInput.safeParse({ ...input(), dream: { ...input().dream, text: 'a'.repeat(8001) } }).success, false);
+  const entry = { id: 'old', date: '2026-10-01', summary: 'A dream.', themes: ['Calm'] };
+  assert.equal(weeklyInput.safeParse({ requestId: randomUUID(), entries: [entry, entry, entry] }).success, false);
+  assert.equal(weeklyInput.safeParse({ requestId: randomUUID(), entries: [entry] }).success, false);
+  const data = interpretationInput.parse(input());
+  assert.throws(() => validateResult('interpretation', { ...result, connectionId: 'invented' }, data));
+  const week = weeklyInput.parse({ requestId: randomUUID(), entries: [entry, { ...entry, id: 'b' }, { ...entry, id: 'c' }] });
+  assert.throws(() => validateResult('weekly', { title: 'Week', summary: 'A reflection', question: 'How?', sourceIds: ['old', 'b', 'invented'] }, week));
+  assert.equal(weeklyInput.safeParse({ ...week, entries: [entry, { ...entry, id: 'b', date: '2026-09-24' }, { ...entry, id: 'c' }] }).success, false);
+});
+
+test('provider invalid output releases quota, network ambiguity is classified conservatively', async () => {
+  const store = new Store(':memory:', config.DATA_KEY);
+  try {
+    const truncated = createServices(config, store, async () => json({ choices: [{ message: { content: '{}' }, finish_reason: 'length' }] }));
+    await assert.rejects(truncated.generate('interpretation', interpretationInput.parse(input())), (e: unknown) => e instanceof Error && 'uncertain' in e && e.uncertain === false);
+    const timeout = createServices(config, store, async () => { throw new Error('network'); });
+    await assert.rejects(timeout.generate('interpretation', interpretationInput.parse(input())), (e: unknown) => e instanceof Error && 'uncertain' in e && e.uncertain === true);
+  } finally { store.close(); }
+});
+
+test('session renewal, durable rate limits, daily cap and consent withdrawal during generation', () => {
+  const store = new Store(':memory:', config.DATA_KEY);
+  try {
+    const a = store.createSession();
+    assert.throws(() => store.authenticate(a.userId), code('invalid_session'));
+    const renewed = store.rotate(a.token, a.userId);
+    assert.equal(store.authenticate(renewed.token), a.userId);
+    store.db.prepare('UPDATE sessions SET expires=0 WHERE expires<?').run(Date.now()+10*60000);
+    assert.throws(() => store.authenticate(a.token), code('invalid_session'));
+    store.rateLimit('test', 'ip', 1, 60000);
+    assert.throws(() => store.rateLimit('test', 'ip', 1, 60000), code('rate_limited'));
+    store.setConsent(a.userId, CONSENT_VERSION);
+    const id = randomUUID();
+    store.reserve(a.userId, id, 'f', access, 'weekly', 1);
+    store.setConsent(a.userId, null);
+    store.complete(a.userId, id, result, { input: null, output: null }, 'model');
+    assert.equal((store.db.prepare('SELECT result FROM requests').get() as { result: unknown }).result, null);
+    assert.throws(() => store.reserve(a.userId, randomUUID(), 'f', access, 'weekly', 1), code('daily_budget_reached'));
+  } finally { store.close(); }
+});
