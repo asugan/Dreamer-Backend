@@ -39,6 +39,7 @@ test('local membership simulation uses real CLIProxy HTTP client for dreams and 
     ...process.env, NODE_ENV: 'development', LOCAL_HOST: '127.0.0.1', LOCAL_PORT: String(port),
     CLIPROXY_BASE_URL: `http://127.0.0.1:${(proxy.address() as AddressInfo).port}/v1`,
     CLIPROXY_API_KEY: 'test-proxy-key', CLIPROXY_MODEL: 'test-proxy-model', REVENUECAT_TEST_PRODUCT_ID: '',
+    LOCAL_INTERPRETATION_LIMIT: '2', LOCAL_WEEKLY_LIMIT: '1',
   }, stdio: ['ignore', 'pipe', 'pipe'] });
   const exited = once(child, 'exit');
   try {
@@ -67,7 +68,15 @@ test('local membership simulation uses real CLIProxy HTTP client for dreams and 
     assert.deepEqual(weekly.result.sourceIds, ['one', 'two', 'three']);
     assert.equal(weekly.result.title, 'Proxy test week');
     assert.equal(proxyCalls, 2);
-    assert.equal((await (await call('/v1/membership', undefined, 'GET')).json()).usage.interpretations.used, 1);
+    assert.equal((await call('/v1/interpretations', { ...dream, requestId: randomUUID() })).status, 200);
+    for (const [path, body] of [['/v1/interpretations', dream], ['/v1/weekly', week]] as const) {
+      const rejected = await call(path, { ...body, requestId: randomUUID() });
+      assert.equal(rejected.status, 429, 'Quota must be enforced without refreshing membership');
+      assert.equal((await rejected.json()).error, 'quota_exceeded');
+    }
+    assert.equal(proxyCalls, 3, 'Over-quota requests must not contact the AI provider');
+    const usage = (await (await call('/v1/membership', undefined, 'GET')).json()).usage;
+    assert.deepEqual(usage, { interpretations: { used: 2, limit: 2 }, weekly: { used: 1, limit: 1 } });
   } finally { child.kill('SIGTERM'); await exited; await new Promise<void>(resolve => proxy.close(() => resolve())); rmSync(cwd, { recursive: true, force: true }); }
   const rejected = spawn(process.execPath, ['--experimental-strip-types', script], { env: { ...process.env, NODE_ENV: 'production' }, stdio: 'ignore' });
   const [code] = await once(rejected, 'exit');
