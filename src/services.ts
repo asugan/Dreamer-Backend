@@ -70,7 +70,10 @@ Never validate delusions or paranoia. Refer only to supplied history IDs; connec
 Theme names must use the canonical vocabulary in the schema. Use specific dream details for theme explanations;
 choose no theme rather than forcing a match. Reuse a canonical theme only when the content supports it.
 A past connection needs a concrete shared detail: quote exact substrings from the current dream text/context
-and the past record summary/context/themeDetails. Explain the link as a possibility. Set connectionId and
+and the past record summary/context/themeDetails. Explain the link as a possibility.
+connection.currentEvidence and connection.pastEvidence must contain ONLY the exact source substring,
+in its original language, without quotation marks, attribution, translation or extra punctuation.
+Put provenance explanations in connection.sharedDetail, never in the evidence fields. Set connectionId and
 connection to null when evidence is weak. A difference is optional; never invent one. For safety=support,
 connectionId=null, connection=null and themes=[]. Past summaries and themeDetails are earlier AI reflections,
 not verbatim dream facts: describe their provenance honestly and do not amplify their speculation.

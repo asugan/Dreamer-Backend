@@ -310,7 +310,16 @@ test('connections and weekly insights require exact evidence and consistent cano
     sharedDetail: 'Both records mention quiet waters; perhaps stillness matters to you.', difference: null } };
   assert.equal(validateResult('interpretation', linked, data).connectionId, 'past');
   assert.throws(() => validateResult('interpretation', { ...linked, connection: null }, data));
-  assert.throws(() => validateResult('interpretation', { ...linked, connection: { ...linked.connection, pastEvidence: 'invented details' } }, data));
+  for (const evidence of [
+    { pastEvidence: 'invented details' },
+    { currentEvidence: 'You wrote, “quiet lake.”' },
+    { pastEvidence: 'An earlier AI reflection summarized, “quiet water.”' },
+  ]) {
+    const unlinked = validateResult('interpretation', { ...linked, connection: { ...linked.connection, ...evidence } }, data);
+    assert.equal(unlinked.connectionId, null);
+    assert.equal(unlinked.connection, null);
+    assert.equal(unlinked.meaning, result.meaning);
+  }
   assert.throws(() => validateResult('interpretation', { ...linked, connectionId: null }, data));
   assert.throws(() => validateResult('interpretation', { ...result, themes: [{ ...result.themes[0], name: 'New model label' }] }, data));
   assert.throws(() => validateResult('interpretation', { ...linked, safety: 'support' }, data));

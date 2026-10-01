@@ -34,6 +34,19 @@ test('local membership simulation uses real CLIProxy HTTP client for dreams and 
   const probe = createServer().listen(0, '127.0.0.1');
   await once(probe, 'listening');
   const port = (probe.address() as AddressInfo).port;
+  const blocked = spawn(process.execPath, ['--experimental-strip-types', script], { cwd, env: {
+    ...process.env, NODE_ENV: 'development', LOCAL_HOST: '127.0.0.1', LOCAL_PORT: String(port),
+    CLIPROXY_API_KEY: 'test-proxy-key', CLIPROXY_MODEL: 'test-proxy-model', REVENUECAT_TEST_PRODUCT_ID: '',
+  }, stdio: ['ignore', 'pipe', 'pipe'] });
+  let blockedError = '';
+  let blockedOutput = '';
+  blocked.stderr.on('data', data => { blockedError += String(data); });
+  blocked.stdout.on('data', data => { blockedOutput += String(data); });
+  const [blockedCode] = await once(blocked, 'exit');
+  assert.equal(blockedCode, 1);
+  assert.match(blockedError, /EADDRINUSE/);
+  assert.doesNotMatch(blockedError, /TypeError/);
+  assert.doesNotMatch(blockedOutput, /LOCAL DEVELOPMENT/);
   await new Promise<void>(resolve => probe.close(() => resolve()));
   const child = spawn(process.execPath, ['--experimental-strip-types', script], { cwd, env: {
     ...process.env, NODE_ENV: 'development', LOCAL_HOST: '127.0.0.1', LOCAL_PORT: String(port),

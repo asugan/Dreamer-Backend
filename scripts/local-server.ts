@@ -31,8 +31,14 @@ const services = testProduct ? realServices : {
     return { billingKey: store.digest(`local:${userId}`), period: '2026-01-01T00:00:00.000Z', expiresAt: '2099-01-01T00:00:00.000Z' };
   },
 };
-const server = createApp(config, store, services).listen(config.PORT, config.HOST, () => {
+const server = createApp(config, store, services).listen(config.PORT, config.HOST);
+server.once('listening', () => {
   console.log(`LOCAL DEVELOPMENT: http://${config.HOST}:${(server.address() as { port: number }).port} — ${testProduct ? "RevenueCat Test Store verification" : "simulated membership"}; real CLIProxy AI requests; no payments`);
+});
+server.once('error', (error: NodeJS.ErrnoException) => {
+  console.error(`Local backend could not listen on ${config.HOST}:${config.PORT}: ${error.code ?? 'listen_error'}`);
+  store.close();
+  process.exit(1);
 });
 const cleanup = setInterval(() => store.cleanup(), 600000);
 cleanup.unref();

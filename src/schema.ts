@@ -57,10 +57,14 @@ export function validateResult(kind: Kind, raw: unknown, input: InterpretationIn
     if (result.connectionId !== null && !data.history.some(e => e.id === result.connectionId)) throw new Error('Unknown history reference');
     const past = data.history.find(e => e.id === result.connectionId);
     if ((result.connectionId === null) !== (result.connection === null)) throw new Error('Connection needs evidence');
+    if (result.safety === 'support' && (result.connectionId || result.themes.length)) throw new Error('Unsafe support structure');
     if (result.connection && (!past ||
         ![data.dream.text, data.dream.context].some(text => text.includes(result.connection!.currentEvidence)) ||
-        !historyEvidence(past).some(text => text.includes(result.connection!.pastEvidence)))) throw new Error('Unsupported connection evidence');
-    if (result.safety === 'support' && (result.connectionId || result.themes.length)) throw new Error('Unsafe support structure');
+        !historyEvidence(past).some(text => text.includes(result.connection!.pastEvidence)))) {
+      // An unverified optional link must not discard the otherwise valid reflection.
+      result.connectionId = null;
+      result.connection = null;
+    }
     return { ...result, sourceText: data.dream.text, sourceContext: data.dream.context,
       sourceMood: data.dream.mood ?? null, sourceDate: data.dream.date };
   }
