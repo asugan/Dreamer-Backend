@@ -42,8 +42,8 @@ export function createApp(config: Config, store: Store, services: Services) {
   app.get('/v1/membership', async (_req, res) => {
     const access = await services.access(res.locals.userId);
     res.json({ active: true, expiresAt: access.expiresAt, usage: {
-      interpretations: { used: store.usage(access, 'interpretation'), limit: 30 },
-      weekly: { used: store.usage(access, 'weekly'), limit: 4 },
+      interpretations: { used: store.usage(access, 'interpretation'), limit: store.quota.interpretation },
+      weekly: { used: store.usage(access, 'weekly'), limit: store.quota.weekly },
     } });
   });
   async function generate(kind: Kind, req: Request, res: Response) {

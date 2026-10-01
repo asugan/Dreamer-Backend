@@ -9,7 +9,7 @@ const subscription = z.object({
   grace_period_expires_date: timestamp.nullable().optional(),
   refunded_at: timestamp.nullable().optional(), is_sandbox: z.boolean(),
   store: z.string(), store_transaction_id: z.union([z.string().min(1), z.number().int().safe()]),
-  ownership_type: z.string(),
+  ownership_type: z.string().optional(),
 });
 const customer = z.object({ subscriber: z.object({
   entitlements: z.record(z.string(), z.object({ product_identifier: z.string(), expires_date: timestamp.nullable() })),
@@ -32,7 +32,8 @@ async function boundedJson(response: Response, maxBytes: number): Promise<unknow
   } finally { await reader.cancel().catch(() => {}); }
 }
 // These services make real HTTP requests; tests supply an injected fetch, never a production bypass.
-export function createServices(config: Config, store: Store, request: typeof fetch = fetch) {
+export function createServices(config: Config, store: Store, request: typeof fetch = fetch, testStore = false) {
+  if (testStore && process.env.NODE_ENV === 'production') throw new Error('Test Store verification is development-only');
   return {
     async access(userId: string): Promise<Access> {
       let response: Response;
@@ -52,11 +53,12 @@ export function createServices(config: Config, store: Store, request: typeof fet
       const selected = subscription.safeParse(parsed.data.subscriber.subscriptions[entitlement.product_identifier]);
       if (!selected.success) throw new HttpError(402, 'subscription_required');
       const sub = selected.data;
-      if (sub.store !== 'app_store' || sub.ownership_type !== 'PURCHASED' || sub.refunded_at || (sub.is_sandbox && config.ALLOW_SANDBOX !== 'true')) throw new HttpError(402, 'subscription_required');
+      // Test Store v1 responses omit ownership_type; App Store must prove purchased ownership.
+      if (sub.store !== (testStore ? 'test_store' : 'app_store') || (testStore ? sub.ownership_type !== undefined && sub.ownership_type !== 'PURCHASED' : sub.ownership_type !== 'PURCHASED') || sub.refunded_at || (testStore ? !sub.is_sandbox : sub.is_sandbox && config.ALLOW_SANDBOX !== 'true')) throw new HttpError(402, 'subscription_required');
       const expires = Math.max(Date.parse(sub.expires_date), Date.parse(sub.grace_period_expires_date ?? sub.expires_date));
       if (!Number.isFinite(expires) || expires <= Date.now() || Date.parse(sub.purchase_date) > Date.now()) throw new HttpError(402, 'subscription_required');
       // Verified transaction + purchase period survives RevenueCat restore/identity transfers.
-      return { billingKey: store.digest(`app_store:${sub.store_transaction_id}`), period: sub.purchase_date, expiresAt: new Date(expires).toISOString() };
+      return { billingKey: store.digest(`${sub.store}:${sub.store_transaction_id}`), period: sub.purchase_date, expiresAt: new Date(expires).toISOString() };
     },
     async generate(kind: Kind, input: InterpretationInput | WeeklyInput) {
       const shape = z.toJSONSchema(kind === 'interpretation' ? interpretationResult : weeklyResult);

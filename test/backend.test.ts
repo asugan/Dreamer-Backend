@@ -220,3 +220,80 @@ test('session renewal, durable rate limits, daily cap and consent withdrawal dur
     assert.throws(() => store.reserve(a.userId, randomUUID(), 'f', access, 'weekly', 1), code('daily_budget_reached'));
   } finally { store.close(); }
 });
+
+
+test('Test Store verification requires explicit local mode and shares real quota accounting', async () => {
+  const store = new Store(':memory:', config.DATA_KEY);
+  const testConfig = { ...config, REVENUECAT_MONTHLY_PRODUCT_ID: 'monthly' };
+  try {
+    const reply = customer({ store: 'test_store', is_sandbox: true });
+    const upstream: typeof fetch = async (url, options) => {
+      assert.equal(String(url), 'https://api.revenuecat.com/v1/subscribers/guest-id');
+      assert.equal((options?.headers as Record<string, string>).Authorization, 'Bearer rc-secret');
+      return json(reply);
+    };
+    await assert.rejects(createServices(testConfig, store, upstream).access('guest-id'), code('subscription_required'));
+    const service = createServices(testConfig, store, upstream, true);
+    const a = await service.access('guest-id');
+    assert.equal(a.billingKey, store.digest('test_store:transaction-1'));
+    assert.equal(a.period, start);
+    const user = store.createSession();
+    store.setConsent(user.userId, CONSENT_VERSION);
+    for (const [kind, limit] of [['interpretation', 30], ['weekly', 4]] as const) {
+      for (let i = 0; i < limit; i++) {
+        const id = randomUUID();
+        store.reserve(user.userId, id, 'fingerprint', a, kind, 200);
+        store.complete(user.userId, id, result, { input: null, output: null }, 'test');
+      }
+      assert.equal(store.usage(a, kind), limit);
+      assert.throws(() => store.reserve(user.userId, randomUUID(), 'fingerprint', a, kind, 200), code('quota_exceeded'));
+    }
+    for (const overrides of [
+      { store: 'app_store' }, { is_sandbox: false }, { expires_date: start },
+      { store_transaction_id: null }, { refunded_at: start }, { ownership_type: 'FAMILY_SHARED' },
+    ]) {
+      const invalid = createServices(testConfig, store, async () => json(customer({ store: 'test_store', is_sandbox: true, ...overrides })), true);
+      await assert.rejects(invalid.access('guest-id'), code('subscription_required'));
+    }
+  } finally { store.close(); }
+});
+
+
+test('lower local quotas reject the next request while defaults stay at 30 / 4', () => {
+  const normal = new Store(':memory:', config.DATA_KEY);
+  const local = new Store(':memory:', config.DATA_KEY, { interpretation: 2, weekly: 1 });
+  try {
+    assert.deepEqual(normal.quota, { interpretation: 30, weekly: 4 });
+    const user = local.createSession();
+    local.setConsent(user.userId, CONSENT_VERSION);
+    for (const [kind, limit] of [['interpretation', 2], ['weekly', 1]] as const) {
+      for (let i = 0; i < limit; i++) {
+        const id = randomUUID();
+        local.reserve(user.userId, id, 'fingerprint', access, kind, 200);
+        local.complete(user.userId, id, result, { input: null, output: null }, 'test');
+        assert.deepEqual(local.replay(user.userId, id, 'fingerprint'), result);
+      }
+      assert.throws(() => local.reserve(user.userId, randomUUID(), 'fingerprint', access, kind, 200), code('quota_exceeded'));
+    }
+    assert.throws(() => new Store(':memory:', config.DATA_KEY, { interpretation: 0, weekly: 1 }), /Invalid quota/);
+  } finally { normal.close(); local.close(); }
+});
+
+
+test('actual Test Store shape omits ownership; App Store still requires it', async () => {
+  const store = new Store(':memory:', config.DATA_KEY);
+  try {
+    const response = customer({ store: 'test_store', is_sandbox: true });
+    delete (response.subscriber.subscriptions.monthly as { ownership_type?: string }).ownership_type;
+    const service = createServices(config, store, async () => json(response), true);
+    const verified = await service.access('guest-id');
+    assert.equal(verified.billingKey, store.digest('test_store:transaction-1'));
+    assert.equal(verified.expiresAt, end);
+    const appStoreResponse = customer();
+    delete (appStoreResponse.subscriber.subscriptions.monthly as { ownership_type?: string }).ownership_type;
+    const productionService = createServices(config, store, async () => json(appStoreResponse));
+    await assert.rejects(productionService.access('guest-id'), code('subscription_required'));
+    const shared = createServices(config, store, async () => json(customer({ store: 'test_store', is_sandbox: true, ownership_type: 'FAMILY_SHARED' })), true);
+    await assert.rejects(shared.access('guest-id'), code('subscription_required'));
+  } finally { store.close(); }
+});

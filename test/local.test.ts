@@ -38,7 +38,7 @@ test('local membership simulation uses real CLIProxy HTTP client for dreams and 
   const child = spawn(process.execPath, ['--experimental-strip-types', script], { cwd, env: {
     ...process.env, NODE_ENV: 'development', LOCAL_HOST: '127.0.0.1', LOCAL_PORT: String(port),
     CLIPROXY_BASE_URL: `http://127.0.0.1:${(proxy.address() as AddressInfo).port}/v1`,
-    CLIPROXY_API_KEY: 'test-proxy-key', CLIPROXY_MODEL: 'test-proxy-model',
+    CLIPROXY_API_KEY: 'test-proxy-key', CLIPROXY_MODEL: 'test-proxy-model', REVENUECAT_TEST_PRODUCT_ID: '',
   }, stdio: ['ignore', 'pipe', 'pipe'] });
   const exited = once(child, 'exit');
   try {

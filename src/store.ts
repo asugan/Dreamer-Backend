@@ -11,7 +11,11 @@ const tokenHash = (token: string) => createHash('sha256').update(token).digest('
 export class Store {
   db: DatabaseSync;
   key: Buffer;
-  constructor(path: string, dataKey: string) {
+  quota: { interpretation: number; weekly: number };
+  constructor(path: string, dataKey: string, quota = { interpretation: 30, weekly: 4 }) {
+    if (!Number.isInteger(quota.interpretation) || quota.interpretation < 1 || quota.interpretation > 30 ||
+        !Number.isInteger(quota.weekly) || quota.weekly < 1 || quota.weekly > 4) throw new Error('Invalid quota limits');
+    this.quota = quota;
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.key = Buffer.from(dataKey, 'hex');
     this.db = new DatabaseSync(path);
@@ -115,7 +119,7 @@ export class Store {
       const pending = this.db.prepare("SELECT COUNT(*) AS count FROM requests WHERE status='pending'").get() as { count: number };
       if (pending.count >= 10) throw new HttpError(503, 'service_busy');
       const used = this.usage(access, kind);
-      if (used >= (kind === 'interpretation' ? 30 : 4)) throw new HttpError(429, 'quota_exceeded');
+      if (used >= this.quota[kind]) throw new HttpError(429, 'quota_exceeded');
       const today = Math.floor(Date.now() / DAY) * DAY;
       const total = this.db.prepare('SELECT COUNT(*) AS count FROM requests WHERE created>=?').get(today) as { count: number };
       if (total.count >= dailyLimit) throw new HttpError(503, 'daily_budget_reached');
