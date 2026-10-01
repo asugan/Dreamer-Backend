@@ -12,7 +12,8 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src test",
-    "test": "node --experimental-strip-types --test test/*.test.ts"
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "dev:local": "node --env-file-if-exists=.env --experimental-strip-types scripts/local-server.ts"
   },
   "dependencies": {
     "express": "^5.2.1",

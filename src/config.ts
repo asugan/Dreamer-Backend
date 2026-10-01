@@ -15,8 +15,8 @@ const env = z.object({
   TRUST_PROXY: z.string().optional(),
 });
 export type Config = z.infer<typeof env>;
-export function readConfig(): Config {
-  const parsed = env.safeParse(process.env);
+export function readConfig(source: NodeJS.ProcessEnv = process.env): Config {
+  const parsed = env.safeParse(source);
   if (!parsed.success) throw new Error(`Invalid configuration: ${parsed.error.issues.map(i => i.path.join('.')).join(', ')}`);
   const url = new URL(parsed.data.CLIPROXY_BASE_URL);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash)

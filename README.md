@@ -164,3 +164,7 @@ References: [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI),
 [RevenueCat customer API](https://www.revenuecat.com/docs/api-v1/customers),
 [Express error handling](https://expressjs.com/en/guide/error-handling/),
 [Node SQLite](https://nodejs.org/api/sqlite.html).
+
+## Local mobile flow harness
+
+`npm run dev:local` starts a separate mock server on port 3002 using `data/local/` and its own encryption key. `LOCAL_HOST=0.0.0.0 npm run dev:local` allows a phone on your LAN to connect. Membership is preactivated; RevenueCat and store payments are skipped. Interpretations and weekly summaries use the real production CLIProxy HTTP client. Configure `CLIPROXY_BASE_URL`, `CLIPROXY_API_KEY` and `CLIPROXY_MODEL` in `.env` before starting; missing proxy credentials fail startup. `NODE_ENV=production` rejects startup. Production `npm start` does not include this harness. See the mobile README for `EXPO_PUBLIC_LOCAL_TESTING=true` setup. Do not expose this test server to the internet.
