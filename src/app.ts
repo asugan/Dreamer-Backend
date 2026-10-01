@@ -62,7 +62,14 @@ export function createApp(config: Config, store: Store, services: Services) {
     try {
       const output = await services.generate(kind, input);
       let result: unknown;
-      try { result = validateResult(kind, output.raw, input); } catch { throw new GenerationError(false); }
+      try { result = validateResult(kind, output.raw, input); } catch (error) {
+        console.warn(JSON.stringify({
+          event: 'generation_result_invalid', kind,
+          category: error instanceof z.ZodError ? 'schema' : 'source_validation',
+          ...(error instanceof z.ZodError ? { issues: error.issues.slice(0, 5).map(issue => ({ path: issue.path, code: issue.code })) } : {}),
+        }));
+        throw new GenerationError(false);
+      }
       store.complete(userId, input.requestId, result, output.usage, config.CLIPROXY_MODEL);
       if (store.consent(userId) !== CONSENT_VERSION) throw new HttpError(403, 'consent_required');
       res.json({ requestId: input.requestId, cached: false, result });

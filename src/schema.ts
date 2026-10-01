@@ -47,6 +47,7 @@ export const weeklyResult = z.object({
   sourceIds: z.array(short(100)).min(3).max(20),
   insights: z.array(insight).max(3),
 }).strict();
+const weeklyResultForValidation = weeklyResult.omit({ insights: true }).extend({ insights: z.unknown().optional() });
 export type InterpretationInput = z.infer<typeof interpretationInput>;
 export type WeeklyInput = z.infer<typeof weeklyInput>;
 export type Kind = 'interpretation' | 'weekly';
@@ -68,22 +69,26 @@ export function validateResult(kind: Kind, raw: unknown, input: InterpretationIn
     return { ...result, sourceText: data.dream.text, sourceContext: data.dream.context,
       sourceMood: data.dream.mood ?? null, sourceDate: data.dream.date };
   }
-  const result = weeklyResult.parse(raw);
+  const result = weeklyResultForValidation.parse(raw);
   const ids = (input as WeeklyInput).entries.map(e => e.id);
   if (new Set(result.sourceIds).size !== result.sourceIds.length || result.sourceIds.length !== ids.length || result.sourceIds.some(id => !ids.includes(id))) throw new Error('Unknown or missing summary source');
   const entries = (input as WeeklyInput).entries;
-  for (const item of result.insights) {
+  const insights: z.infer<typeof insight>[] = [];
+  for (const candidate of (Array.isArray(result.insights) ? result.insights : []).slice(0, 3)) {
+    const parsed = insight.safeParse(candidate);
+    if (!parsed.success) continue;
+    const item = parsed.data;
     const evidenceIds = item.evidence.map(e => e.entryId);
-    if (new Set(evidenceIds).size !== evidenceIds.length) throw new Error('Duplicate insight sources');
-    const sources = item.evidence.map(e => {
+    if (new Set(evidenceIds).size !== evidenceIds.length) continue;
+    if (!item.evidence.every(e => {
       const source = entries.find(entry => entry.id === e.entryId);
-      if (!source || !historyEvidence(source).some(text => text.includes(e.quote))) throw new Error('Unsupported weekly evidence');
-      return source;
-    });
-    if (item.kind === 'repeat' && (!item.theme || !sources.every(e => e.themes.includes(item.theme!)))) throw new Error('Unsupported recurring theme');
-    if (item.kind === 'difference' && item.theme !== null) throw new Error('Difference must not assert a recurring theme');
+      return !!source && historyEvidence(source).some(text => text.includes(e.quote));
+    })) continue;
+    if (item.kind === 'repeat' && (!item.theme || !item.evidence.every(e => entries.find(entry => entry.id === e.entryId)?.themes.includes(item.theme!)))) continue;
+    if (item.kind === 'difference' && item.theme !== null) continue;
+    insights.push(item);
   }
-  return result;
+  return { ...result, insights };
 }
 function historyEvidence(e: z.infer<typeof historyEntry>) {
   return [e.summary, e.context, ...e.themeDetails, ...(e.mood ? [e.mood] : [])];

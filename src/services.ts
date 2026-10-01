@@ -92,17 +92,54 @@ Return exactly one JSON object satisfying this schema, without Markdown: ${JSON.
           body: JSON.stringify({ model: config.CLIPROXY_MODEL, stream: false, max_tokens: 2000,
             messages: [{ role: 'system', content: prompt }, { role: 'user', content: JSON.stringify(input) }] }),
         });
-      } catch { throw new GenerationError(true); }
-      if (!response.ok) throw new GenerationError(response.status >= 500 || response.status === 408);
-      try {
-        const body = z.object({
+      } catch {
+        console.warn(JSON.stringify({ event: 'cliproxy_transport_failure' }));
+        throw new GenerationError(true);
+      }
+      if (!response.ok) {
+        console.warn(JSON.stringify({ event: 'cliproxy_rejected', status: response.status }));
+        throw new GenerationError(response.status >= 500 || response.status === 408);
+      }
+      let responseBody: unknown;
+      try { responseBody = await boundedJson(response, 64000); } catch (error) {
+        const category = error instanceof Error && error.message === 'Response too large' ? 'response_body_too_large'
+          : error instanceof Error && error.message === 'Missing response' ? 'response_body_missing'
+          : error instanceof SyntaxError ? 'response_body_json' : 'response_body_read';
+        console.warn(JSON.stringify({ event: 'cliproxy_invalid_response', category }));
+        throw new GenerationError(false);
+      }
+      const parsedBody = z.object({
           choices: z.array(z.object({ message: z.object({ content: z.string() }), finish_reason: z.string().nullable() })).min(1),
           usage: z.object({ prompt_tokens: z.number().int().nonnegative(), completion_tokens: z.number().int().nonnegative() }).optional(),
-        }).parse(await boundedJson(response, 64000));
-        const choice = body.choices[0];
-        if (choice.finish_reason !== 'stop' || choice.message.content.length > 24000) throw new Error('Incomplete output');
-        return { raw: JSON.parse(choice.message.content), usage: { input: body.usage?.prompt_tokens ?? null, output: body.usage?.completion_tokens ?? null } };
-      } catch { throw new GenerationError(false); }
+      }).safeParse(responseBody);
+      if (!parsedBody.success) {
+        console.warn(JSON.stringify({
+          event: 'cliproxy_invalid_response', category: 'response_envelope_schema',
+          issues: parsedBody.error.issues.slice(0, 5).map(issue => ({ path: issue.path, code: issue.code })),
+        }));
+        throw new GenerationError(false);
+      }
+      const body = parsedBody.data;
+      const choice = body.choices[0];
+      if (choice.finish_reason !== 'stop') {
+        const allowedFinishReasons = ['stop', 'length', 'tool_calls', 'content_filter'];
+        console.warn(JSON.stringify({
+          event: 'cliproxy_invalid_response', category: 'finish_reason',
+          finish_reason: choice.finish_reason === null ? null : allowedFinishReasons.includes(choice.finish_reason) ? choice.finish_reason : 'other',
+          content_length: choice.message.content.length,
+        }));
+        throw new GenerationError(false);
+      }
+      if (choice.message.content.length > 24000) {
+        console.warn(JSON.stringify({ event: 'cliproxy_invalid_response', category: 'content_too_large', content_length: choice.message.content.length }));
+        throw new GenerationError(false);
+      }
+      let raw: unknown;
+      try { raw = JSON.parse(choice.message.content); } catch {
+        console.warn(JSON.stringify({ event: 'cliproxy_invalid_response', category: 'completion_json' }));
+        throw new GenerationError(false);
+      }
+      return { raw, usage: { input: body.usage?.prompt_tokens ?? null, output: body.usage?.completion_tokens ?? null } };
     },
   };
 }
