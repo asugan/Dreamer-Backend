@@ -25,8 +25,8 @@ test('local membership simulation uses real CLIProxy HTTP client for dreams and 
     proxyCalls++;
     const raw = input.dream ? {
       title: 'Proxy test reply', summary: 'Reply delivered over HTTP.', themes: [],
-      meaning: 'Provider response.', question: 'How did it feel?', connectionId: null, safety: 'reflection',
-    } : { title: 'Proxy test week', summary: 'Weekly reply delivered over HTTP.', question: 'What repeats?', sourceIds: input.entries.map((e: { id: string }) => e.id) };
+      meaning: 'Provider response.', question: 'How did it feel?', connectionId: null, connection: null, safety: 'reflection',
+    } : { title: 'Proxy test week', summary: 'Weekly reply delivered over HTTP.', question: 'What repeats?', sourceIds: input.entries.map((e: { id: string }) => e.id), insights: [] };
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(raw) }, finish_reason: 'stop' }] }));
   }).listen(0, '127.0.0.1');
@@ -55,7 +55,7 @@ test('local membership simulation uses real CLIProxy HTTP client for dreams and 
     assert.equal((await call('/v1/membership', undefined, 'GET')).status, 200);
     const dream = { requestId: randomUUID(), dream: { id: 'one', date: '2026-10-01', text: 'A lake.', context: '' } };
     assert.equal((await call('/v1/interpretations', dream)).status, 403);
-    assert.equal((await call('/v1/consent', { granted: true, version: '2026-10-01' }, 'PUT')).status, 204);
+    assert.equal((await call('/v1/consent', { granted: true, version: '2026-10-01-evidence-v1' }, 'PUT')).status, 204);
     const first = await (await call('/v1/interpretations', dream)).json();
     assert.equal(first.result.sourceText, 'A lake.');
     assert.equal(first.result.title, 'Proxy test reply');
@@ -63,7 +63,7 @@ test('local membership simulation uses real CLIProxy HTTP client for dreams and 
     assert.equal(first.cached, false);
     assert.equal((await (await call('/v1/interpretations', dream)).json()).cached, true);
     assert.equal(proxyCalls, 1, 'Replay must not contact the proxy again');
-    const week = { requestId: randomUUID(), entries: ['one', 'two', 'three'].map(id => ({ id, date: '2026-10-01', summary: 'A lake.', themes: ['Local test'] })) };
+    const week = { requestId: randomUUID(), entries: ['one', 'two', 'three'].map(id => ({ id, date: '2026-10-01', summary: 'A lake.', themes: ['Calm'], themeDetails: [], context: '' })) };
     const weekly = await (await call('/v1/weekly', week)).json();
     assert.deepEqual(weekly.result.sourceIds, ['one', 'two', 'three']);
     assert.equal(weekly.result.title, 'Proxy test week');

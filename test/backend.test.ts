@@ -18,7 +18,7 @@ const config: Config = {
   ALLOW_SANDBOX: 'false', DAILY_GENERATION_LIMIT: 200,
 };
 const input = () => ({ requestId: randomUUID(), dream: { id: 'dream-1', date: '2026-10-01', text: 'I walked beside a quiet lake.', context: '' }, history: [] });
-const result = { title: 'A quiet lake', summary: 'You walked beside a lake.', themes: [{ name: 'Calm', detail: 'The quiet water may suggest calm.', icon: 'water' }], meaning: 'It might reflect a wish for stillness.', question: 'How did the lake feel?', connectionId: null, safety: 'reflection' };
+const result = { title: 'A quiet lake', summary: 'You walked beside a lake.', themes: [{ name: 'Calm', detail: 'The quiet water may suggest calm.', icon: 'water' }], meaning: 'It might reflect a wish for stillness.', question: 'How did the lake feel?', connectionId: null, connection: null, safety: 'reflection' };
 const start = new Date(Date.now() - 86400000).toISOString();
 const end = new Date(Date.now() + 30 * 86400000).toISOString();
 function customer(overrides = {}) {
@@ -53,7 +53,7 @@ test('HTTP flow: authentication, consent, RevenueCat, proxy contract, replay and
     if (mode === 'network') throw new Error('Network interrupted');
     const data = JSON.parse(payload.messages[1].content);
     const reply = mode === 'invalid' ? { ...result, connectionId: 'invented' } : data.entries
-      ? { title: 'A quiet week', summary: 'Calm appeared in these entries.', question: 'What felt peaceful?', sourceIds: data.entries.map((e: { id: string }) => e.id) }
+      ? { title: 'A quiet week', summary: 'Calm appeared in these entries.', question: 'What felt peaceful?', sourceIds: data.entries.map((e: { id: string }) => e.id), insights: [{ kind: 'repeat', theme: 'Calm', detail: 'Quiet appeared in the supplied summaries.', evidence: data.entries.slice(0, 2).map((e: { id: string; summary: string }) => ({ entryId: e.id, quote: e.summary })) }] }
       : result;
     return json({ choices: [{ message: { content: JSON.stringify(reply) }, finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 50 } });
   };
@@ -90,10 +90,13 @@ test('HTTP flow: authentication, consent, RevenueCat, proxy contract, replay and
     assert.equal(row.input_tokens, 100);
     const membership = await call('/v1/membership', undefined, session.token, 'GET');
     assert.equal((await membership.json()).usage.interpretations.used, 1);
-    const week = { requestId: randomUUID(), entries: ['a', 'b', 'c'].map(id => ({ id, date: '2026-10-01', summary: 'A quiet dream', themes: ['Calm'] })) };
+    const week = { requestId: randomUUID(), entries: ['a', 'b', 'c'].map(id => ({ id, date: '2026-10-01', summary: 'A quiet dream', themes: ['Calm'], themeDetails: [], context: '' })) };
     const weekly = await call('/v1/weekly', week, session.token);
     assert.equal(weekly.status, 200);
-    assert.deepEqual((await weekly.json()).result.sourceIds, ['a', 'b', 'c']);
+    const weeklyOutput = (await weekly.json()).result;
+    assert.deepEqual(weeklyOutput.sourceIds, ['a', 'b', 'c']);
+    assert.equal(weeklyOutput.insights[0].theme, 'Calm');
+    assert.deepEqual(weeklyOutput.insights[0].evidence.map((e: { entryId: string }) => e.entryId), ['a', 'b']);
     mode = 'invalid';
     const invalid = await call('/v1/interpretations', input(), session.token);
     assert.equal(invalid.status, 502);
@@ -180,13 +183,13 @@ test('RevenueCat rejects expiry, refund, sandbox, shared/promo access and missin
 
 test('schema guards text limits, weekly thresholds, duplicate IDs and invented history references', () => {
   assert.equal(interpretationInput.safeParse({ ...input(), dream: { ...input().dream, text: 'a'.repeat(8001) } }).success, false);
-  const entry = { id: 'old', date: '2026-10-01', summary: 'A dream.', themes: ['Calm'] };
+  const entry = { id: 'old', date: '2026-10-01', summary: 'A dream.', themes: ['Calm'], themeDetails: [], context: '' };
   assert.equal(weeklyInput.safeParse({ requestId: randomUUID(), entries: [entry, entry, entry] }).success, false);
   assert.equal(weeklyInput.safeParse({ requestId: randomUUID(), entries: [entry] }).success, false);
   const data = interpretationInput.parse(input());
   assert.throws(() => validateResult('interpretation', { ...result, connectionId: 'invented' }, data));
   const week = weeklyInput.parse({ requestId: randomUUID(), entries: [entry, { ...entry, id: 'b' }, { ...entry, id: 'c' }] });
-  assert.throws(() => validateResult('weekly', { title: 'Week', summary: 'A reflection', question: 'How?', sourceIds: ['old', 'b', 'invented'] }, week));
+  assert.throws(() => validateResult('weekly', { title: 'Week', summary: 'A reflection', question: 'How?', sourceIds: ['old', 'b', 'invented'], insights: [] }, week));
   assert.equal(weeklyInput.safeParse({ ...week, entries: [entry, { ...entry, id: 'b', date: '2026-09-24' }, { ...entry, id: 'c' }] }).success, false);
 });
 
@@ -296,4 +299,43 @@ test('actual Test Store shape omits ownership; App Store still requires it', asy
     const shared = createServices(config, store, async () => json(customer({ store: 'test_store', is_sandbox: true, ownership_type: 'FAMILY_SHARED' })), true);
     await assert.rejects(shared.access('guest-id'), code('subscription_required'));
   } finally { store.close(); }
+});
+
+
+test('connections and weekly insights require exact evidence and consistent canonical themes', () => {
+  const past = { id: 'past', date: '2026-09-30', summary: 'You rested beside quiet water.', themes: ['Calm'],
+    themeDetails: ['Quiet water may suggest calm.'], mood: 'Peaceful', context: 'A restful weekend.' };
+  const data = interpretationInput.parse({ ...input(), history: [past] });
+  const linked = { ...result, connectionId: 'past', connection: { currentEvidence: 'quiet lake', pastEvidence: 'quiet water',
+    sharedDetail: 'Both records mention quiet waters; perhaps stillness matters to you.', difference: null } };
+  assert.equal(validateResult('interpretation', linked, data).connectionId, 'past');
+  assert.throws(() => validateResult('interpretation', { ...linked, connection: null }, data));
+  assert.throws(() => validateResult('interpretation', { ...linked, connection: { ...linked.connection, pastEvidence: 'invented details' } }, data));
+  assert.throws(() => validateResult('interpretation', { ...linked, connectionId: null }, data));
+  assert.throws(() => validateResult('interpretation', { ...result, themes: [{ ...result.themes[0], name: 'New model label' }] }, data));
+  assert.throws(() => validateResult('interpretation', { ...linked, safety: 'support' }, data));
+  const week = weeklyInput.parse({ requestId: randomUUID(), entries: [past, { ...past, id: 'second', mood: 'Curious' },
+    { ...past, id: 'third', themes: ['Exploration'] }] });
+  const reflection = { title: 'Recorded period', summary: 'Quiet water appeared twice.', question: 'What did the water feel like?',
+    sourceIds: ['past', 'second', 'third'], insights: [{ kind: 'repeat', theme: 'Calm', detail: 'The first two summaries mention quiet water.',
+      evidence: [{ entryId: 'past', quote: 'quiet water' }, { entryId: 'second', quote: 'quiet water' }] }] };
+  assert.equal(validateResult('weekly', reflection, week).insights.length, 1);
+  assert.throws(() => validateResult('weekly', { ...reflection, insights: [{ ...reflection.insights[0], theme: 'Loss' }] }, week));
+  assert.throws(() => validateResult('weekly', { ...reflection, insights: [{ ...reflection.insights[0], evidence: [{ entryId: 'past', quote: 'quiet water' }] }] }, week));
+  assert.throws(() => validateResult('weekly', { ...reflection, insights: [{ ...reflection.insights[0], evidence: [{ entryId: 'past', quote: 'quiet water' }, { entryId: 'past', quote: 'quiet water' }] }] }, week));
+  assert.throws(() => validateResult('weekly', { ...reflection, insights: [{ ...reflection.insights[0], evidence: [{ entryId: 'past', quote: 'quiet water' }, { entryId: 'second', quote: 'fabricated quote' }] }] }, week));
+  const difference = { kind: 'difference', theme: null, detail: 'Reported moods differ.', evidence: [{ entryId: 'past', quote: 'Peaceful' }, { entryId: 'second', quote: 'Curious' }] };
+  assert.equal(validateResult('weekly', { ...reflection, insights: [difference] }, week).insights[0].kind, 'difference');
+  assert.equal(validateResult('weekly', { ...reflection, insights: [] }, week).insights.length, 0, 'No pattern is valid');
+  const { connection: omittedConnection, ...incompleteResult } = result;
+  void omittedConnection;
+  assert.throws(() => validateResult('interpretation', incompleteResult, data), 'Current result contract is required');
+  const { insights: omittedInsights, ...incompleteWeek } = reflection;
+  void omittedInsights;
+  assert.throws(() => validateResult('weekly', incompleteWeek, week));
+  const { themeDetails: omittedDetails, ...incompleteHistory } = past;
+  void omittedDetails;
+  assert.equal(weeklyInput.safeParse({ ...week, entries: [incompleteHistory, week.entries[1], week.entries[2]] }).success, false);
+  assert.equal(weeklyInput.safeParse({ ...week, entries: [{ ...past, themes: ['Searching for familiarity'] }, week.entries[1], week.entries[2]] }).success, false);
+
 });

@@ -14,7 +14,7 @@ export function createApp(config: Config, store: Store, services: Services) {
   app.use((_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
   app.get('/health', (_req, res) => { store.db.prepare('SELECT 1').get(); res.json({ status: 'ok' }); });
   app.use('/v1', (req, _res, next) => { store.rateLimit('ip', req.ip ?? 'unknown', 120, 60000); next(); });
-  app.use(express.json({ limit: '48kb', strict: true }));
+  app.use(express.json({ limit: '256kb', strict: true }));
   app.post('/v1/sessions', (req, res) => {
     z.object({}).strict().parse(req.body);
     store.rateLimit('registration', req.ip ?? 'unknown', 10, 3600000);

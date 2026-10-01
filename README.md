@@ -45,7 +45,7 @@ They do not contact paid services. The sibling mobile app is not modified/connec
    Persist the token in secure device storage; it is a password. The user ID is not a credential.
 2. Configure/log in to RevenueCat using that **server-issued userId** before purchase/restore.
 3. Explain proxy/upstream AI transfer and temporary response retention; obtain explicit consent.
-   `PUT /v1/consent` with `{granted: true, version: "2026-10-01"}` records it.
+   `PUT /v1/consent` with `{granted: true, version: "2026-10-01-evidence-v1"}` records it.
 4. All remaining endpoints require `Authorization: Bearer <token>`. Persist each request UUID
    and its exact body locally before sending; retries use the same ID/body.
 5. Save successful results in the device journal; handle `safety: support` as help-seeking guidance.
@@ -76,20 +76,23 @@ Interpretation request:
   },
   "history": [{
     "id": "local-dream-0", "date": "2026-09-29",
-    "summary": "A quiet garden.", "themes": ["Calm"]
+    "summary": "A quiet garden.", "themes": ["Calm"],
+    "themeDetails": ["Resting in a quiet garden."], "context": ""
   }]
 }
 ```
 
 History is optional and capped at 20 entries, three theme labels per entry. Text limit is
-8,000 characters, context 1,000, history summaries 800. Unknown fields/duplicate IDs are rejected.
+8,000 characters, context 1,000, history summaries 800. History includes context (up to 300 characters), up to three theme details (200 characters each)
+and an optional reported mood. The HTTP JSON
+limit is 256 KiB to accommodate bounded Unicode payloads. Unknown fields/duplicate IDs are rejected.
 Success is `{requestId, cached, result}`. Interpretation result includes `title`, `summary`,
-`themes`, `meaning`, `question`, `connectionId`, `safety`, and server-added `sourceText`.
+`themes`, `meaning`, `question`, `connectionId`, `connection`, `safety`, and server-added source text/context/mood/date.
 References must match supplied history IDs; local record contents cannot be independently
 verified without storing the journal.
 
 Weekly request is `{requestId, entries: [...]}`, using the history-entry shape above.
-Result includes `title`, `summary`, `question`, `sourceIds`. The mobile client must persist
+Result includes `title`, `summary`, `question`, `sourceIds`, and `insights`. The mobile client must persist
 weekly summaries against record IDs **and versions**, invalidate on editing/deletion and reuse
 them rather than issue a new request on every visit.
 
@@ -174,3 +177,20 @@ References: [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI),
 For `dev:local`, set `REVENUECAT_TEST_PRODUCT_ID` to the monthly Test Store product and set `REVENUECAT_SECRET_KEY` from its RevenueCat project. Attach the product to the configured entitlement (default `premium`). The presence of that product ID disables simulated membership and verifies RevenueCat's `test_store` sandbox purchase, transaction evidence, ownership and expiry. CLIProxy generation and quotas are unchanged. `npm start` never enables Test Store verification; `NODE_ENV=production` rejects the local server. The mobile SDK needs the project's public `test_` key. Test Store's accelerated renewal creates new quota periods, unlike the mock membership's fixed period.
 
 For quick quota tests, set `LOCAL_INTERPRETATION_LIMIT=2` and `LOCAL_WEEKLY_LIMIT=1` in the backend `.env`. Only `dev:local` reads these; production remains 30 / 4. Settings → Refresh membership status displays the actual limits. A third new interpretation or second new weekly reflection in the same purchase period must return `quota_exceeded`; retrying a completed request reuses its cached result. Renewals reset the purchase period, so test before the next accelerated renewal. Remove these settings to test the production-sized limits.
+
+
+## Evidence-based reflections
+
+New themes use the small canonical vocabulary in `src/themes.ts`; keep it aligned with the mobile copy.
+Only canonical theme names are accepted. A connection includes exact current dream/context and past
+summary/context/theme-detail quotes, a cautious shared-detail explanation and an optional difference.
+The server checks quote membership and source IDs. Previous AI summaries are not original dream facts:
+these checks establish provenance, not semantic correctness or psychological validity.
+Weekly `insights` (up to three) cite two to five distinct sources and exact quotes. Repetition requires
+one canonical theme shared by every cited source. Differences compare records within the selected
+period, not previous weeks; empty insights are valid. Only the current input/output contract is supported:
+history requires theme details and context; outputs require explicit connection and insights fields.
+Completed requests still replay their cached result without a second generation or quota charge.
+Deploy this backend before the updated mobile client. Production AI-quality evaluation remains required.
+
+The enriched-history consent version is `2026-10-01-evidence-v1`; generation requires explicit permission for the current disclosure.
