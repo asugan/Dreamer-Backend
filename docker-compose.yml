@@ -1,0 +1,48 @@
+# Dreamer Backend deploy compose file.
+# Important: per README, run a SINGLE instance with persistent disk. DO NOT
+# `docker compose up --scale backend=2`; SQLite requires single-process ownership.
+#
+# Usage:
+#   cp .env.example .env   # fill in DATA_KEY and the other required fields
+#   docker compose up -d --build
+#   curl http://127.0.0.1:3001/health
+#
+# In production, put an HTTPS reverse proxy (nginx/caddy/traefik) in front and
+# set TRUST_PROXY in .env to the proxy IP/CIDR. Never leave it empty/0.0.0.0/0.
+#
+# NOTE: if CLIPROXY_BASE_URL in .env is `http://127.0.0.1:8317/...`, it cannot
+# reach the host from inside the container (127.0.0.1 is the container itself).
+# If the proxy runs on the host, use `http://host.docker.internal:8317/v1` in
+# .env and add `extra_hosts: ["host.docker.internal:host-gateway"]` to the
+# service if needed. If it is a service on the same compose network, use the
+# service name instead.
+
+services:
+  backend:
+    build: .
+    image: dreamer-backend:latest
+    container_name: dreamer-backend
+    restart: unless-stopped
+    # Single replica: do not scale.
+    deploy:
+      replicas: 1
+    env_file:
+      - .env
+    environment:
+      # Binding to loopback inside the container would shut out outside traffic; 0.0.0.0 is required.
+      HOST: "0.0.0.0"
+      # Keep the DB on the persistent volume (not ./data/dreamer.sqlite).
+      DATABASE_PATH: "/app/data/dreamer.sqlite"
+    ports:
+      - "${PORT:-3001}:3001"
+    volumes:
+      - dreamer-data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:'+(process.env.PORT||3001)+'/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  dreamer-data:
