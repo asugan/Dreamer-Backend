@@ -1,21 +1,14 @@
-# Dreamer Backend deploy compose file.
-# Important: per README, run a SINGLE instance with persistent disk. DO NOT
-# `docker compose up --scale backend=2`; SQLite requires single-process ownership.
+# Dreamer Backend compose file (production host, Linux).
+# Run a SINGLE instance: SQLite requires single-process ownership. Never `--scale backend=2`.
 #
 # Usage:
-#   cp .env.example .env   # fill in DATA_KEY and the other required fields
+#   cp .env.example .env   # secrets only: DATA_KEY, CLIPROXY_API_KEY, REVENUECAT_SECRET_KEY
 #   docker compose up -d --build
 #   curl http://127.0.0.1:3001/health
 #
-# In production, put an HTTPS reverse proxy (nginx/caddy/traefik) in front and
-# set TRUST_PROXY in .env to the proxy IP/CIDR. Never leave it empty/0.0.0.0/0.
-#
-# NOTE: if CLIPROXY_BASE_URL in .env is `http://127.0.0.1:8317/...`, it cannot
-# reach the host from inside the container (127.0.0.1 is the container itself).
-# If the proxy runs on the host, use `http://host.docker.internal:8317/v1` in
-# .env and add `extra_hosts: ["host.docker.internal:host-gateway"]` to the
-# service if needed. If it is a service on the same compose network, use the
-# service name instead.
+# Host network: CLIProxy listens on the host's 127.0.0.1:8317, unreachable from a bridge
+# network. The app binds loopback only; the Cloudflare Tunnel / reverse proxy reaches it there,
+# so TRUST_PROXY=127.0.0.1 is the real client-IP source. Not usable on Docker Desktop (macOS/Windows).
 
 services:
   backend:
@@ -23,18 +16,22 @@ services:
     image: dreamer-backend:latest
     container_name: dreamer-backend
     restart: unless-stopped
-    # Single replica: do not scale.
+    network_mode: host
     deploy:
       replicas: 1
     env_file:
-      - .env
+      - .env # secrets only; non-secret settings below take precedence
     environment:
-      # Binding to loopback inside the container would shut out outside traffic; 0.0.0.0 is required.
-      HOST: "0.0.0.0"
-      # Keep the DB on the persistent volume (not ./data/dreamer.sqlite).
+      HOST: "127.0.0.1"
+      PORT: "3001"
       DATABASE_PATH: "/app/data/dreamer.sqlite"
-    ports:
-      - "${PORT:-3001}:3001"
+      TRUST_PROXY: "127.0.0.1"
+      CLIPROXY_BASE_URL: "http://127.0.0.1:8317/v1"
+      CLIPROXY_MODEL: "gpt-6-luna"
+      REVENUECAT_ENTITLEMENT: "dreamer_pro"
+      REVENUECAT_MONTHLY_PRODUCT_ID: "monthly"
+      ALLOW_SANDBOX: "false"
+      DAILY_GENERATION_LIMIT: "200"
     volumes:
       - dreamer-data:/app/data
     healthcheck:

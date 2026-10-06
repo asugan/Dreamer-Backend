@@ -147,6 +147,9 @@ Errors are `{error: "machine_code"}`. Translate them to friendly UI messages; ke
 - Durable rate limits: 120 requests/minute/IP, 60/minute/user, 10 registrations/hour/IP,
   1,000 registrations/day globally, 10 generation attempts/hour/user. Anonymous auth alone
   doesn't prove a genuine device; CAPTCHA/App Attest isn't included.
+- Production: `docker compose up -d --build` (host network, SQLite in the `dreamer-data` volume;
+  `.env` holds only `DATA_KEY`, `CLIPROXY_API_KEY`, `REVENUECAT_SECRET_KEY`, other settings are in
+  `docker-compose.yml`).
 - Keep `.env`, data directory, key and backups private. Server applies a restrictive umask.
   Use SQLite backup tooling / `VACUUM INTO` or stop the service for backups; copying only the
   database during WAL writes is unsafe.
